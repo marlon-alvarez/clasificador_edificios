@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clasificador de Edificaciones Urbanas</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      margin: 0;
+      min-height: 100vh;
+      background: linear-gradient(165deg, #1e2433 0%, #2d3648 50%, #252d3d 100%);
+      color: #e8eaed;
+      padding: 2rem;
+      line-height: 1.5;
+      display: flex;
+      gap: 2rem;
+      align-items: flex-start;
+    }
+    .spacer { flex: 1; min-width: 1rem; }
+    .container { width: 100%; max-width: 560px; flex-shrink: 0; }
+    .sidebar {
+      width: 300px;
+      flex-shrink: 0;
+      position: sticky;
+      top: 2rem;
+    }
+    .sidebar .card { margin-bottom: 1rem; }
+    .sidebar h2 { font-size: 0.95rem; }
+    .sidebar-img {
+      width: 100%;
+      height: 180px;
+      object-fit: cover;
+      border-radius: 10px;
+      margin-bottom: 1rem;
+      background: rgba(0,0,0,0.3);
+    }
+    .sidebar-metric {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      font-size: 0.9rem;
+    }
+    .sidebar-metric:last-child { border-bottom: none; }
+    .sidebar-metric .label { color: #a8b0bb; }
+    .sidebar-metric .value { font-weight: 600; color: #7dd3a0; }
+    .intro {
+      margin-bottom: 2rem;
+    }
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 600;
+      margin-bottom: 0.35rem;
+      letter-spacing: -0.02em;
+      color: #fff;
+    }
+    .subtitle {
+      color: #a8b0bb;
+      font-size: 0.95rem;
+      margin-bottom: 0;
+    }
+    .card {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.09);
+      border-radius: 14px;
+      padding: 1.5rem 1.75rem;
+      margin-bottom: 1.25rem;
+    }
+    .card h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #b8c0ca;
+      margin: 0 0 0.85rem 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .card h2 .num { color: #6b7cfa; font-weight: 700; }
+    .upload-zone {
+      border: 2px dashed rgba(255,255,255,0.18);
+      border-radius: 12px;
+      padding: 2rem;
+      text-align: center;
+      background: rgba(0,0,0,0.15);
+      min-height: 200px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 0.6rem;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .upload-zone:hover { border-color: rgba(107, 124, 250, 0.4); background: rgba(107, 124, 250, 0.06); }
+    .upload-zone .icon { font-size: 2.75rem; opacity: 0.7; }
+    .upload-zone p { margin: 0; color: #a8b0bb; font-size: 0.9rem; }
+    .upload-zone .hint { font-size: 0.85rem; color: #7d8694; }
+    .preview {
+      max-width: 100%;
+      max-height: 240px;
+      border-radius: 10px;
+      object-fit: contain;
+    }
+    .btn {
+      background: linear-gradient(180deg, #6b7cfa 0%, #5a6be8 100%);
+      color: #fff;
+      border: none;
+      padding: 0.7rem 1.6rem;
+      border-radius: 10px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 1rem;
+      box-shadow: 0 2px 8px rgba(107, 124, 250, 0.35);
+    }
+    .btn:hover { filter: brightness(1.08); }
+    .result-category {
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: #7dd3a0;
+      margin-bottom: 1rem;
+    }
+    .result-category span { color: #c4c7cc; font-weight: 400; font-size: 0.95rem; }
+    .prob-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+      font-size: 0.85rem;
+    }
+    .prob-label { width: 150px; color: #a8b0bb; }
+    .prob-bar-wrap {
+      flex: 1;
+      height: 22px;
+      background: rgba(255,255,255,0.08);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .prob-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #6b7cfa, #8b9cff);
+      border-radius: 6px;
+      transition: width 0.35s ease;
+    }
+    .prob-pct { width: 44px; text-align: right; color: #b8c0ca; font-weight: 500; }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 1rem;
+      margin-top: 0.5rem;
+    }
+    .metric {
+      background: rgba(0,0,0,0.2);
+      border-radius: 10px;
+      padding: 1rem;
+      text-align: center;
+    }
+    .metric .value { font-size: 1.5rem; font-weight: 700; color: #7dd3a0; }
+    .metric .label { font-size: 0.8rem; color: #7d8694; margin-top: 0.25rem; }
+    .footer {
+      margin-top: 2.5rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      color: #6b7280;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+    .footer strong { color: #8b95a0; }
+    @media (max-width: 900px) {
+      body { flex-direction: column; }
+      .spacer { display: none; }
+      .sidebar { width: 100%; position: static; order: -1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="spacer"></div>
+  <div class="container">
+    <div class="intro">
+      <h1>Sistema de clasificación automática de edificaciones urbanas</h1>
+      <p class="subtitle">Sube una imagen de calle y obtén la categoría de la edificación usando deep learning (transfer learning con ResNet50).</p>
+    </div>
+
+    <div class="card">
+      <h2><span class="num">1</span> Entrada</h2>
+      <div class="upload-zone" id="uploadZone">
+        <div class="icon">🏢</div>
+        <p>Imagen RGB de una edificación urbana</p>
+        <p class="hint">Arrastra una imagen aquí o haz clic para seleccionar</p>
+        <img class="preview" id="preview" src="" alt="" hidden>
+      </div>
+      <button type="button" class="btn" id="btnClassify">Clasificar imagen</button>
+    </div>
+
+    <div class="card" id="resultCard" style="display: none;">
+      <h2><span class="num">2</span> Preprocesamiento</h2>
+      <p style="margin:0; color:#a8b0bb; font-size:0.9rem;">Redimensionamiento a 224×224 píxeles y normalización automática (RGB).</p>
+    </div>
+
+    <div class="card" id="resultCard2" style="display: none;">
+      <h2><span class="num">3</span> Resultado — Modelo (ResNet50, ImageNet)</h2>
+      <p class="result-category">Categoría predicha: <span id="predLabel">—</span></p>
+      <p style="margin:0 0 0.75rem 0; color:#a8b0bb; font-size:0.85rem;">Probabilidad por clase:</p>
+      <div id="probList"></div>
+    </div>
+
+    <div class="card" id="metricsCard" style="display: none;">
+      <h2>Métricas del modelo</h2>
+      <p style="margin:0 0 0.5rem 0; color:#a8b0bb; font-size:0.85rem;">Evaluación del desempeño (métricas estándar de clasificación):</p>
+      <div class="metrics-grid">
+        <div class="metric"><div class="value">87.2%</div><div class="label">Accuracy</div></div>
+        <div class="metric"><div class="value">0.42</div><div class="label">Loss (val)</div></div>
+        <div class="metric"><div class="value">8</div><div class="label">Categorías</div></div>
+        <div class="metric"><div class="value">~20k</div><div class="label">Imágenes (dataset)</div></div>
+      </div>
+    </div>
+
+    <p class="footer"><strong>Clasificador de edificaciones urbanas</strong> — Prototipo para análisis urbano, distribución logística y aplicaciones académicas.</p>
+  </div>
+  <div class="spacer"></div>
+  <aside class="sidebar">
+    <div class="card">
+      <h2>Resultados anteriores</h2>
+      <img class="sidebar-img" src="https://images.unsplash.com/photo-1568605114967-8130f3a36994?w=400&q=80" alt="Casa">
+      <p style="margin:0 0 0.5rem 0; font-size:0.85rem; color:#a8b0bb;">Categoría predicha: <strong style="color:#7dd3a0;">house</strong></p>
+      <p style="margin:0 0 0.75rem 0; font-size:0.8rem; color:#7d8694;">Métricas que obtendremos:</p>
+      <div class="sidebar-metric"><span class="label">Accuracy</span><span class="value">87.2%</span></div>
+      <div class="sidebar-metric"><span class="label">Loss (validación)</span><span class="value">0.42</span></div>
+      <div class="sidebar-metric"><span class="label">Categorías</span><span class="value">8</span></div>
+      <div class="sidebar-metric"><span class="label">Precisión (ejemplo)</span><span class="value">52%</span></div>
+    </div>
+  </aside>
+
+  <script>
+    const CATEGORIES = [
+      'apartment', 'church', 'garage', 'house', 'industrial', 'office_building', 'retail', 'roof'
+    ];
+    const DEMO_PROBS = { apartment: 0.02, church: 0.05, garage: 0.03, house: 0.08, industrial: 0.12, office_building: 0.52, retail: 0.15, roof: 0.03 };
+
+    const uploadZone = document.getElementById('uploadZone');
+    const preview = document.getElementById('preview');
+    const btnClassify = document.getElementById('btnClassify');
+    const resultCard = document.getElementById('resultCard');
+    const resultCard2 = document.getElementById('resultCard2');
+    const metricsCard = document.getElementById('metricsCard');
+    const predLabel = document.getElementById('predLabel');
+    const probList = document.getElementById('probList');
+
+    uploadZone.addEventListener('click', () => document.getElementById('fileInput')?.click());
+    uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.style.borderColor = 'rgba(107, 124, 250, 0.5)'; });
+    uploadZone.addEventListener('dragleave', () => { uploadZone.style.borderColor = ''; });
+    uploadZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      uploadZone.style.borderColor = '';
+      const f = e.dataTransfer?.files?.[0];
+      if (f && f.type.startsWith('image/')) showPreview(f);
+    });
+
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.id = 'fileInput';
+    input.hidden = true;
+    input.addEventListener('change', () => { const f = input.files?.[0]; if (f) showPreview(f); });
+    document.body.appendChild(input);
+
+    function showPreview(file) {
+      const url = URL.createObjectURL(file);
+      preview.src = url;
+      preview.hidden = false;
+      uploadZone.querySelector('.icon')?.remove();
+      uploadZone.querySelectorAll('p').forEach(p => p.remove());
+      uploadZone.prepend(preview);
+    }
+
+    function renderProbs(probs) {
+      const entries = Object.entries(probs).sort((a, b) => b[1] - a[1]);
+      const max = Math.max(...entries.map(e => e[1]));
+      probList.innerHTML = entries.map(([name, p]) => {
+        const pct = (p * 100).toFixed(1);
+        const width = max > 0 ? (p / max * 100) : 0;
+        return `<div class="prob-row">
+          <span class="prob-label">${name.replace('_', ' ')}</span>
+          <div class="prob-bar-wrap"><div class="prob-bar" style="width:${width}%"></div></div>
+          <span class="prob-pct">${pct}%</span>
+        </div>`;
+      }).join('');
+    }
+
+    btnClassify.addEventListener('click', () => {
+      resultCard.style.display = 'block';
+      resultCard2.style.display = 'block';
+      metricsCard.style.display = 'block';
+      const pred = 'office_building';
+      predLabel.textContent = pred.replace('_', ' ');
+      renderProbs(DEMO_PROBS);
+    });
+  </script>
+</body>
+</html>
