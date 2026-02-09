@@ -1,0 +1,4 @@
+[core]
+    remote = aws-remote
+['remote "aws-remote"']
+    url = s3://s3://clasificador-edificios-dvcstore
