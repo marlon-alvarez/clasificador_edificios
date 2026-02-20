@@ -1,0 +1,14 @@
+artifact_uri: /Users/gerox/Documents/Study/MaIA/S4C1/PDS/Microproyecto-CNN/clasificador_edificios/model/mlruns/620639402621848044/aba5fcbe59e24515ae321f9db04ffe7d/artifacts
+end_time: 1771603919302
+entry_point_name: ''
+experiment_id: '620639402621848044'
+lifecycle_stage: active
+run_id: aba5fcbe59e24515ae321f9db04ffe7d
+run_name: test_connection
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1771603919298
+status: 3
+tags: []
+user_id: gerox

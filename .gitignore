@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# MLflow / Databases
+model/*.db
+model/mlruns/
+model/mlflow.db
+model/mlruns.db
+
+# OS
+.DS_Store
+Thumbs.db
