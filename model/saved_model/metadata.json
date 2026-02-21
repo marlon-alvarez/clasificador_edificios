@@ -1,0 +1,36 @@
+{
+  "classes": [
+    "apartment",
+    "church",
+    "garage",
+    "house",
+    "industrial",
+    "officebuilding",
+    "retail",
+    "roof"
+  ],
+  "class_labels": [
+    "Apartment",
+    "Church",
+    "Garage",
+    "House",
+    "Industrial",
+    "Office Bldg",
+    "Retail",
+    "Roof"
+  ],
+  "img_size": 224,
+  "num_classes": 8,
+  "winner_model": "EfficientNetB0 (fine-tuned)",
+  "test_accuracy": 0.6178,
+  "all_results": {
+    "ResNet50 (frozen)": 0.5806,
+    "EfficientNetB0 (frozen)": 0.5978,
+    "MobileNetV2 (frozen)": 0.5444,
+    "EfficientNetB0 (fine-tuned)": 0.6178
+  },
+  "timestamp": "20260220_212200",
+  "train_images": 13547,
+  "val_images": 2903,
+  "test_images": 2904
+}

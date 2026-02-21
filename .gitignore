@@ -15,6 +15,10 @@ model/*.db
 model/mlruns/
 model/mlflow.db
 model/mlruns.db
+model/mlruns.db.backup
+
+# Modelo grande — versionado con DVC
+model/saved_model/model.keras
 
 # OS
 .DS_Store
