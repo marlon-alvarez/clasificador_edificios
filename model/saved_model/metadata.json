@@ -21,15 +21,15 @@
   ],
   "img_size": 224,
   "num_classes": 8,
-  "winner_model": "EfficientNetB0 (fine-tuned)",
-  "test_accuracy": 0.6157,
+  "winner_model": "ResNet50 (fine-tuned)",
+  "test_accuracy": 0.6591,
   "all_results": {
-    "ResNet50 (frozen)": 0.5723,
-    "EfficientNetB0 (frozen)": 0.5892,
-    "MobileNetV2 (frozen)": 0.5517,
-    "EfficientNetB0 (fine-tuned)": 0.6157
+    "ResNet50 (frozen)": 0.5713,
+    "EfficientNetB3 (frozen)": 0.5565,
+    "MobileNetV2 (frozen)": 0.5427,
+    "ResNet50 (fine-tuned)": 0.6591
   },
-  "timestamp": "20260221_000416",
+  "timestamp": "20260221_023533",
   "train_images": 13547,
   "val_images": 2903,
   "test_images": 2904
