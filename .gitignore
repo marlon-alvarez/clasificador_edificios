@@ -1,14 +1,9 @@
-# Virtual environments
-venv/
-.venv/
-
 # Environment variables
 .env
 .env.local
 .env.*.local
 
 # macOS
-.DS_Store
 .AppleDouble
 .LSOverride
 ._*
@@ -17,6 +12,27 @@ venv/
 __pycache__/
 *.py[cod]
 *$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# MLflow / Databases
+model/*.db
+model/mlruns/
+model/mlflow.db
+model/mlruns.db
+model/mlruns.db.backup
+
+# Modelo grande — versionado con DVC
+model/saved_model/model.keras
+
+# OS
+.DS_Store
+Thumbs.db
 *.egg-info/
 dist/
 build/
