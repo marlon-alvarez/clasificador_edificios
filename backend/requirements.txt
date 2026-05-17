@@ -1,7 +1,0 @@
-fastapi
-uvicorn[standard]
-python-multipart
-tensorflow
-Pillow
-numpy
-gdown
