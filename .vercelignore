@@ -1,0 +1,17 @@
+.venv/
+api/.venv/
+**/__pycache__/
+*.pyc
+
+Exploracion_Datos/
+model/
+.dvc/
+.dvcignore
+
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+.git/
+.DS_Store
+*.log

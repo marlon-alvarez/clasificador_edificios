@@ -19,7 +19,6 @@ from openai import AsyncOpenAI, AuthenticationError
 from PIL import Image
 
 import config
-from colors import PALETTE
 from images import pil_to_data_url
 
 log = logging.getLogger(__name__)
@@ -49,29 +48,6 @@ def _get_client() -> AsyncOpenAI:
             api_key=config.RUNPOD_API_KEY,
         )
     return _client
-
-
-# ── Regex de direcciones (heredado para `extract_fields`) ──
-ADDRESS_RE = re.compile(
-    r"\b("
-    r"(?:calle|cl|cll|carrera|cra|kr|krra|avenida|av|avda|"
-    r"diagonal|dg|diag|transversal|tv|trans|autopista|circular|circunvalar)\.?"
-    r"[\s\.\-#°ºoNn]*"
-    r"\d{1,4}[a-z]?"
-    r"(?:\s*(?:bis|sur|norte|este|oeste))?"
-    r"(?:\s*(?:#|n[°ºo]\.?|no\.?)\s*\d{1,4}[a-z]?)?"
-    r"(?:\s*-\s*\d{1,4})?"
-    r")",
-    re.IGNORECASE,
-)
-
-
-def extract_fields(text: str) -> dict[str, Any]:
-    text_norm = " ".join(text.split())
-    addresses = sorted({m.group(1).strip() for m in ADDRESS_RE.finditer(text_norm)})
-    lower = text_norm.lower()
-    color_mentions = sorted({c for c in PALETTE if re.search(rf"\b{c}\b", lower)})
-    return {"addresses": addresses, "color_mentions": color_mentions}
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -319,6 +295,74 @@ async def describe_surroundings(pil_image: Image.Image) -> str:
     raw = (resp.choices[0].message.content or "").strip()
     log.info(
         "vLLM surroundings response: finish_reason=%s tokens=%s raw=%r",
+        resp.choices[0].finish_reason,
+        resp.usage.completion_tokens if resp.usage else None,
+        raw[:400],
+    )
+    return raw
+
+
+# ────────────────────────────────────────────────────────────────────
+# SITE (descripción del inmueble principal)
+# ────────────────────────────────────────────────────────────────────
+
+SITE_SYSTEM = (
+    "Ayudas a domiciliarios a reconocer un inmueble desde la calle. "
+    "Respondes en español, en UNA frase corta, factual y visual. "
+    "Nada de arquitectura, estilo ni opiniones."
+)
+
+SITE_PROMPT = (
+    "Describe en UNA frase corta cómo se ve el inmueble desde la calle, "
+    "para que un domiciliario lo reconozca. Menciona lo que sea visible:\n"
+    "- color de la fachada,\n"
+    "- número de pisos,\n"
+    "- tipo de puerta o portón (madera, metálica, garaje, reja) y su color,\n"
+    "- letrero, número visible, balcones, antejardín u otra seña distintiva.\n\n"
+    "Ejemplos de estilo (NO copies, solo referencia):\n"
+    "- \"Edificio de 4 pisos color blanco con balcones grises y portón metálico negro.\"\n"
+    "- \"Casa de 2 pisos color beige con puerta de madera, reja blanca y antejardín "
+    "pequeño.\"\n"
+    "- \"Edificio gris de 3 pisos con letrero rojo \\\"Farmacia\\\" sobre la entrada.\"\n\n"
+    "Reglas estrictas:\n"
+    "- UNA sola frase.\n"
+    "- Solo lo que ayuda a ubicarlo a simple vista.\n"
+    "- Nada de \"arquitectura\", \"funcionalismo\", \"diseño\", \"estética\".\n"
+    "- Nada del entorno ni vecinos."
+)
+
+
+async def describe_site(pil_image: Image.Image) -> str:
+    """Una llamada al VLM enfocada en describir el inmueble principal."""
+    image_url = pil_to_data_url(pil_image)
+    messages = [
+        {"role": "system", "content": SITE_SYSTEM},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": image_url}},
+                {"type": "text", "text": SITE_PROMPT},
+            ],
+        },
+    ]
+    try:
+        resp = await _get_client().chat.completions.create(
+            model=config.MODEL_NAME,
+            messages=messages,
+            max_tokens=70,
+            temperature=0.2,
+            stop=["\n", "\nmodel", "<end_of_turn>", "<start_of_turn>"],
+            extra_body={"repetition_penalty": 1.3},
+        )
+    except AuthenticationError:
+        log.exception("describe_site failed (401)")
+        return ""
+    except Exception:
+        log.exception("describe_site failed")
+        return ""
+    raw = (resp.choices[0].message.content or "").strip()
+    log.info(
+        "vLLM site response: finish_reason=%s tokens=%s raw=%r",
         resp.choices[0].finish_reason,
         resp.usage.completion_tokens if resp.usage else None,
         raw[:400],

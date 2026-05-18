@@ -3,17 +3,14 @@ FastAPI app — POST /processing.
 
 Pipeline:
   1. Recibe un array de imágenes (multipart/form-data, campo `images`).
-  2. Anonimiza caras humanas en TODAS.
-  3. Llamadas al VLM en paralelo (N llamadas totales):
-     - Principal (índice 0)        → 1 clasificación con Gemma-3-VL fine-tuned.
-     - Cada imagen adicional       → 1 extracción combinada (OCR + alrededores
-       + horario) que devuelve JSON estructurado en una sola request.
-  4. Colores dominantes y campos (direcciones, menciones de color) se calculan
-     local en CPU.
-  5. Consolida horario: primer horario detectado entre las extras, o un default
+  2. Anonimiza caras humanas en TODAS (CPU local, OpenCV Haar).
+  3. Llamadas al VLM en paralelo:
+     - Principal (índice 0)  → clasificación + descripción del inmueble.
+     - Cada extra            → horario + descripción del entorno.
+  4. Consolida horario: primer horario detectado entre las extras, o un default
      (L-V 08:00-17:00, Sábado 08:00-12:00, Domingo cerrado) si nadie lo trae.
-  6. Devuelve JSON estructurado: principal con clasificación primero, luego
-     secundarias, horario, y un summary consolidado de todo el contexto.
+  5. Devuelve JSON estructurado: principal con clasificación + descripción,
+     secundarias con surroundings, horario, y un summary consolidado.
 
 Configuración: `api/.env` (cargado en `config.py`) o variables de entorno.
 """
@@ -30,9 +27,9 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 import config
 from anonymizer import anonymize_faces
 from classifier import classify_property
-from colors import dominant_colors
 from extractor import (
     consolidate_schedule,
+    describe_site,
     describe_surroundings,
     extract_schedule,
 )
@@ -86,68 +83,62 @@ async def processing(
     # 2. Anonimización global (CPU local)
     anonymized = [(name, *anonymize_faces(img)) for name, img in loaded]
 
-    # 3. Llamadas al VLM en paralelo, una por tipo de extracción:
-    #    - 1 clasificación (sólo imagen principal)
-    #    - (N-1) extracciones de horario (una por extra)
-    #    - (N-1) descripciones de entorno (una por extra)
+    # 3. Llamadas al VLM en paralelo:
+    #    - Principal: clasificación + descripción del inmueble.
+    #    - Cada extra: horario + descripción del entorno.
     extras = anonymized[1:]
     classify_coro = classify_property(anonymized[0][1])
+    site_coro = describe_site(anonymized[0][1])
     schedule_coros = [extract_schedule(img) for _, img, _ in extras]
     surroundings_coros = [describe_surroundings(img) for _, img, _ in extras]
 
-    schedules_per_extra, surroundings_per_extra, classification = await asyncio.gather(
+    classification, site_description, schedules_per_extra, surroundings_per_extra = await asyncio.gather(
+        classify_coro,
+        site_coro,
         asyncio.gather(*schedule_coros),
         asyncio.gather(*surroundings_coros),
-        classify_coro,
     )
 
-    # 4. Ensamblado por imagen (colores locales + datos extraídos)
-    processed: list[dict[str, Any]] = []
+    # 4. Bloque de la imagen principal (clasificación + descripción del inmueble)
+    main_name, _, main_faces = anonymized[0]
+    main_image = {
+        "index": 0,
+        "filename": main_name,
+        "role": "principal",
+        "faces_blurred": main_faces,
+        "classification": classification,
+        "site_description": site_description,
+    }
+
+    # 5. Imágenes adicionales (solo surroundings)
+    additional_images: list[dict[str, Any]] = []
     all_surroundings: list[str] = []
-    all_dominant_colors: set[str] = set()
-
-    for i, (name, img, n_faces) in enumerate(anonymized):
-        colors = dominant_colors(img, k=4)
-        all_dominant_colors.update(colors)
-
-        if i == 0:
-            surroundings_text = ""
-        else:
-            surroundings_text = surroundings_per_extra[i - 1]
-            if surroundings_text:
-                all_surroundings.append(surroundings_text)
-
-        item: dict[str, Any] = {
+    for i, (name, _, n_faces) in enumerate(extras, start=1):
+        surroundings_text = surroundings_per_extra[i - 1]
+        if surroundings_text:
+            all_surroundings.append(surroundings_text)
+        additional_images.append({
             "index": i,
             "filename": name,
-            "role": "principal" if i == 0 else "secundaria",
+            "role": "secundaria",
             "faces_blurred": n_faces,
-            "dominant_colors": colors,
-            "surroundings": {"description": surroundings_text},
-        }
-        processed.append(item)
+            "surroundings": surroundings_text,
+        })
 
-    # 5. Consolidar horario (primer detectado entre las extras, o default)
+    # 6. Consolidar horario (primer detectado entre las extras, o default)
     schedule = consolidate_schedule(schedules_per_extra, base_index=1)
-
-    # 6. Clasificación a la principal
-    main_block = processed[0]
-    main_block["classification"] = classification
 
     # 7. Respuesta
     return {
-        "main_image": main_block,
         "property_type": classification["label"],
+        "main_image": main_image,
+        "additional_images": additional_images,
         "schedule": schedule,
-        "additional_images": processed[1:],
         "summary": {
-            "property_type": classification["label"],
-            "main_dominant_colors": main_block["dominant_colors"],
-            "all_dominant_colors": sorted(all_dominant_colors),
-            "surroundings_concatenated": " | ".join(all_surroundings),
             "total_images": len(images),
             "total_faces_blurred": sum(n for _, _, n in anonymized),
             "schedule_source": schedule["source"],
+            "surroundings_concatenated": " | ".join(all_surroundings),
         },
     }
 
