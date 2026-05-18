@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openai import AuthenticationError, OpenAI
+from openai import AsyncOpenAI, AuthenticationError
 from PIL import Image
 
 import config
@@ -13,10 +13,10 @@ from images import pil_to_data_url
 
 log = logging.getLogger(__name__)
 
-_client: OpenAI | None = None
+_client: AsyncOpenAI | None = None
 
 
-def _get_client() -> OpenAI:
+def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
         base = f"{config.RUNPOD_URL.rstrip('/')}/v1"
@@ -27,11 +27,11 @@ def _get_client() -> OpenAI:
             config.MODEL_NAME,
             config.RUNPOD_API_KEY,
         )
-        _client = OpenAI(base_url=base, api_key=config.RUNPOD_API_KEY)
+        _client = AsyncOpenAI(base_url=base, api_key=config.RUNPOD_API_KEY)
     return _client
 
 
-def _log_auth_hint(exc: AuthenticationError) -> None:
+def _log_auth_hint() -> None:
     log.warning(
         "[TESTING] vLLM 401 — clave que envía esta API (repr): %r | "
         "curl: curl -sS %r -H %r -H 'Content-Type: application/json' "
@@ -43,55 +43,7 @@ def _log_auth_hint(exc: AuthenticationError) -> None:
     )
 
 
-SURROUNDINGS_SYSTEM = (
-    "You are a vision assistant helping a delivery driver locate a property. "
-    "Describe ONLY visible reference points useful to find the address: "
-    "neighboring businesses, store signs, adjacent buildings, distinctive "
-    "colors and materials of nearby properties, visible landmarks. "
-    "Be concise and factual. Respond in Spanish."
-)
-SURROUNDINGS_PROMPT = (
-    "Describe los inmuebles aledaños y puntos de referencia visibles en la imagen "
-    "que ayuden a localizar la dirección: negocios contiguos, letreros con nombres "
-    "de comercios, edificios vecinos distintivos, colores y materiales, hitos visuales. "
-    "Sé breve y factual. Si no hay información útil, responde exactamente: "
-    "'sin referencias visibles'."
-)
-
-
-def describe_surroundings(pil_image: Image.Image) -> dict[str, Any]:
-    """Pide al VLM una descripción de inmuebles aledaños y referencias visuales."""
-    image_url = pil_to_data_url(pil_image)
-    messages = [
-        {"role": "system", "content": SURROUNDINGS_SYSTEM},
-        {
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": image_url}},
-                {"type": "text", "text": SURROUNDINGS_PROMPT},
-            ],
-        },
-    ]
-    try:
-        resp = _get_client().chat.completions.create(
-            model=config.MODEL_NAME,
-            messages=messages,
-            max_tokens=300,
-            temperature=0.2,
-        )
-    except AuthenticationError as e:
-        _log_auth_hint(e)
-        log.exception("Surroundings description failed (401)")
-        return {"description": "", "error": str(e)}
-    except Exception as e:
-        log.exception("Surroundings description failed")
-        return {"description": "", "error": str(e)}
-
-    text = (resp.choices[0].message.content or "").strip()
-    return {"description": text, "error": None}
-
-
-def classify_property(pil_image: Image.Image) -> dict[str, Any]:
+async def classify_property(pil_image: Image.Image) -> dict[str, Any]:
     """Devuelve {label, raw, error}. label ∈ CLASS_NAMES ∪ {'unknown'}."""
     image_url = pil_to_data_url(pil_image)
     messages = [
@@ -105,14 +57,14 @@ def classify_property(pil_image: Image.Image) -> dict[str, Any]:
         },
     ]
     try:
-        resp = _get_client().chat.completions.create(
+        resp = await _get_client().chat.completions.create(
             model=config.MODEL_NAME,
             messages=messages,
             max_tokens=32,
             temperature=0.0,
         )
     except AuthenticationError as e:
-        _log_auth_hint(e)
+        _log_auth_hint()
         log.exception("Classification failed (401)")
         return {"label": "unknown", "raw": None, "error": str(e)}
     except Exception as e:
@@ -120,6 +72,12 @@ def classify_property(pil_image: Image.Image) -> dict[str, Any]:
         return {"label": "unknown", "raw": None, "error": str(e)}
 
     raw = (resp.choices[0].message.content or "").strip()
+    log.info(
+        "vLLM classify response: raw=%r finish_reason=%s usage=%s",
+        raw,
+        resp.choices[0].finish_reason,
+        resp.usage.model_dump() if resp.usage else None,
+    )
     lower = raw.lower()
     label = "unknown"
     for name in config.CLASS_NAMES:

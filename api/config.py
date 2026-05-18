@@ -22,9 +22,6 @@ CLASS_NAMES = [
     ).split(",") if c.strip()
 ]
 
-RETURN_IMAGES = os.environ.get("RETURN_IMAGES", "1") == "1"
-OCR_LANGS = [s.strip() for s in os.environ.get("OCR_LANGS", "es,en").split(",")]
-
 # Prompts idénticos a los del fine-tune (gemma3_vl_clasificador_inmuebles.py)
 SYSTEM_MSG = (
     "You are an expert image classifier for real estate properties. "

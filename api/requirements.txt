@@ -6,5 +6,4 @@ openai>=1.40
 pillow>=10.0
 numpy>=1.26
 opencv-python-headless>=4.9
-easyocr>=1.7.1
 scikit-learn>=1.4

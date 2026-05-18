@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 from sklearn.cluster import KMeans
 
-# Paleta usada por ocr.py para detectar menciones de color en el texto.
+# Paleta usada por extractor.py para detectar menciones de color en el texto.
 PALETTE: dict[str, tuple[int, int, int]] = {
     "blanco": (240, 240, 240),
     "negro": (20, 20, 20),
