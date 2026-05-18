@@ -1,16 +1,19 @@
-"""Llamadas focalizadas al VLM, una por tipo de extracción.
+"""Llamadas focalizadas al VLM. Una llamada = una tarea.
 
-Tres funciones independientes (cada una con prompt mínimo):
-  * `extract_schedule(img)`   → horario de atención
-  * `describe_surroundings(img)` → descripción del entorno físico
+Dos funciones:
+  * `extract_description(img)` → VISIÓN. Una descripción corta por imagen
+    que un domiciliario pueda usar para reconocer el lugar. Incluye TODO lo
+    visible: colores de fachada, letreros (texto literal), horarios escritos,
+    pistas del entorno, números, comercios contiguos.
+  * `parse_schedule(text)` → SOLO TEXTO. Toma la descripción acumulada y
+    devuelve `{lunes: ["HH:MM-HH:MM"], ...}` o `None` si no hay horarios.
 
-Cada función hace UNA llamada al modelo. La idea es que el modelo
-fine-tuned (`gemma-3-4b-ft`), que tiende a outputs cortos, pueda
-responder bien si la tarea es chica y específica.
+`consolidate_schedule(parsed)` aplica `DEFAULT_SCHEDULE` si vino `None`.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -44,330 +47,204 @@ def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
         _client = AsyncOpenAI(
-            base_url=f"{config.RUNPOD_URL.rstrip('/')}/v1",
+            base_url=f"{config.DESCRIBE_URL}/v1",
             api_key=config.RUNPOD_API_KEY,
+        )
+        log.info(
+            "describe vLLM client init base_url=%s/v1 model=%s",
+            config.DESCRIBE_URL, config.DESCRIBE_MODEL,
         )
     return _client
 
 
 # ────────────────────────────────────────────────────────────────────
-# SCHEDULE
+# DESCRIPCIÓN (visión, 1 llamada por imagen)
+# Dos prompts según el rol de la imagen:
+#   - main      → fachada del inmueble (visual primero).
+#   - secondary → letreros y entorno (OCR primero).
+# La consolidación de horario corre después con `parse_schedule` sobre
+# las descripciones concatenadas.
 # ────────────────────────────────────────────────────────────────────
 
-SCHEDULE_SYSTEM = (
-    "Lees imágenes de letreros y describes el horario de atención que ves "
-    "en una sola frase corta en español."
+DESCRIPTION_SYSTEM = (
+    "Describes inmuebles para domiciliarios. Respondes en español, en una "
+    "descripción corta (1-2 frases), factual, sin opiniones y sin inventar."
 )
 
-SCHEDULE_PROMPT = (
-    "Mira la imagen y describe en UNA frase el horario de atención que se ve: "
-    "qué días, en qué horas. Usa lenguaje natural, sin listas ni tablas.\n\n"
-    "Ejemplos de frases válidas (NO copies estos, solo son referencia de estilo):\n"
-    "- \"Lunes a viernes de 9 a 6, sábado de 10 a 2, domingo cerrado.\"\n"
-    "- \"De lunes a jueves de 8 a 12 y de 2 a 6 de la tarde, viernes de 7am a 3pm.\"\n"
-    "- \"Sábados y domingos de 10 a 4.\"\n\n"
-    "Si la imagen NO muestra ningún horario, responde solo: NINGUNO"
+DESCRIPTION_MAIN_PROMPT = (
+    "Esta es la foto PRINCIPAL del inmueble. Escribe UNA descripción corta "
+    "(máx. 2 frases) de la fachada para que un domiciliario reconozca el lugar.\n\n"
+    "Incluye SOLO lo que se vea claramente:\n"
+    "- color de fachada, puerta, reja, portón;\n"
+    "- número de pisos, balcones, antejardín, garaje;\n"
+    "- número de placa si es visible.\n\n"
+    "No describas comercios contiguos ni el entorno en esta imagen. "
+    "No uses listas. No repitas instrucciones. "
+    "Si la imagen no muestra nada útil, responde: sin información visible."
 )
 
-
-# ── Regex y parser para el horario en lenguaje natural ──
-
-_TIME_RE = re.compile(r"(\d{1,2})(?::(\d{2}))?")
-
-_DAY_NORMALIZE = {
-    "lunes": "lunes", "martes": "martes",
-    "miercoles": "miercoles", "miércoles": "miercoles",
-    "jueves": "jueves", "viernes": "viernes",
-    "sabado": "sabado", "sábado": "sabado",
-    "domingo": "domingo",
-}
-
-# Reconoce 4 tipos de tokens en orden de prioridad (alternancia regex):
-#  1. Rango de días: "lunes a viernes"
-#  2. Día suelto: "viernes"
-#  3. Rango de horas: "8:00 a 12:00", "8-12", "7 a 3 pm"
-#  4. Cierre: "cerrado", "cerrada", "closed"
-_TOKEN_RE = re.compile(
-    r"(?P<d1>lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)"
-    r"\s+(?:a|al|hasta|-|–|—)\s+"
-    r"(?P<d2>lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)"
-    r"|"
-    r"(?P<dsingle>lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)"
-    r"|"
-    r"(?P<t1>\d{1,2}(?::\d{2})?)\s*(?:am|pm)?\s*(?:a|al|hasta|-|–|—)\s*"
-    r"(?P<t2>\d{1,2}(?::\d{2})?)\s*(?P<ampm>am|pm|a\.?m\.?|p\.?m\.?|de\s+la\s+(?:ma[ñn]ana|tarde|noche))?"
-    r"|"
-    r"(?P<closed>cerrad[oa]s?|closed)",
-    re.IGNORECASE,
+DESCRIPTION_SECONDARY_PROMPT = (
+    "Tarea: transcribir el texto visible en la imagen y describir el "
+    "entorno, para que un domiciliario ubique el inmueble.\n\n"
+    "1. TEXTO: cita entre comillas y de forma LITERAL todo lo que se lea: "
+    "letreros, avisos, horarios escritos (días y rangos de hora), nombres "
+    "de comercios, números de placa, direcciones. No parafrasees: copia el "
+    "texto tal cual aparece, respetando mayúsculas y signos.\n"
+    "2. ENTORNO (si aplica): una frase corta con comercios contiguos, "
+    "esquinas, parques o puntos de referencia visibles.\n\n"
+    "Formato: prosa breve, máximo 3 frases. No uses listas con guiones.\n"
+    "Solo si la imagen no contiene NINGÚN texto ni elemento útil, responde "
+    "exactamente: sin información visible."
 )
 
 
-def _norm_time(raw: str) -> tuple[int, int] | None:
-    m = _TIME_RE.match(raw.strip())
-    if not m:
-        return None
-    hi = int(m.group(1))
-    mi = int(m.group(2)) if m.group(2) else 0
-    if not (0 <= hi <= 23 and 0 <= mi <= 59):
-        return None
-    return hi, mi
-
-
-def _normalize_range(open_str: str, close_str: str, ampm: str | None) -> str | None:
-    """Convierte 12h→24h con heurística + sufijo AM/PM si vino explícito.
-
-    Heurística: si no hay sufijo y la hora de cierre es ≤ la de apertura y ≤ 7,
-    asume PM y suma 12 a la hora de cierre (caso típico: '7 a 3' = 07-15).
-    """
-    o = _norm_time(open_str)
-    c = _norm_time(close_str)
-    if not o or not c:
-        return None
-    oh, om = o
-    ch, cm = c
-
-    suffix = (ampm or "").lower().replace(".", "").replace(" ", "")
-    is_pm = "pm" in suffix or "tarde" in suffix or "noche" in suffix
-    is_am = "am" in suffix or "mañana" in suffix or "manana" in suffix
-    if is_pm:
-        # Cierre PM siempre. Apertura PM sólo si oh+12 < ch (caso 'de 2 a 6pm').
-        # Para '7am a 3pm', oh=7 + 12 = 19 > ch=15 → mantenemos oh=7.
-        if ch < 12:
-            ch += 12
-        if oh < 12 and (oh + 12) < ch:
-            oh += 12
-    elif is_am:
-        if oh == 12:
-            oh = 0
-        if ch == 12:
-            ch = 0
-    elif (ch < oh or (ch == oh and cm <= om)) and ch <= 7:
-        # sin sufijo y cierre menor que apertura: cierre asumido PM
-        ch += 12
-
-    if ch > 23 or oh > 23:
-        return None
-    return f"{oh:02d}:{om:02d}-{ch:02d}:{cm:02d}"
-
-
-def _expand_day_range(d1: str, d2: str) -> list[str]:
-    a = _DAY_NORMALIZE.get(d1.lower())
-    b = _DAY_NORMALIZE.get(d2.lower())
-    if not a or not b:
-        return []
-    i, j = DAYS.index(a), DAYS.index(b)
-    if i <= j:
-        return DAYS[i:j + 1]
-    return DAYS[i:] + DAYS[:j + 1]
-
-
-def _parse_schedule(raw: str) -> dict[str, list[str]] | None:
-    """Parsea descripciones en lenguaje natural:
-       'Lunes a jueves de 8 a 12 y de 2 a 6, viernes 7 a 3, sábado cerrado.'
-    También acepta el formato estructurado 'LUNES: 08:00-12:00\\n...' como caso particular.
-    """
-    if not raw:
-        return None
-    cleaned = raw.strip()
-    if cleaned.upper().startswith("NINGUNO"):
-        return None
-
-    out: dict[str, list[str]] = {d: [] for d in DAYS}
-    current_days: list[str] = []
-    dirty = False  # True después de asociar un rango de tiempo a current_days
-    found_any = False
-
-    for m in _TOKEN_RE.finditer(cleaned):
-        if m.group("d1") and m.group("d2"):
-            current_days = _expand_day_range(m.group("d1"), m.group("d2"))
-            dirty = False
-        elif m.group("dsingle"):
-            day = _DAY_NORMALIZE.get(m.group("dsingle").lower())
-            if not day:
-                continue
-            if dirty or not current_days:
-                current_days = [day]
-                dirty = False
-            else:
-                current_days.append(day)
-        elif m.group("t1") and m.group("t2"):
-            r = _normalize_range(m.group("t1"), m.group("t2"), m.group("ampm"))
-            if r and current_days:
-                for d in current_days:
-                    if r not in out[d]:
-                        out[d].append(r)
-                found_any = True
-                dirty = True
-        elif m.group("closed"):
-            dirty = True  # los días previos quedan con su lista (vacía si no se llenó)
-
-    if not found_any:
-        return None
-    return out
-
-
-async def extract_schedule(pil_image: Image.Image) -> dict[str, list[str]] | None:
-    """Una llamada al VLM enfocada en horario. Devuelve dict o None."""
+async def extract_description(pil_image: Image.Image, role: str = "secondary") -> str:
+    """Una llamada al VLM. `role` ∈ {'main','secondary'} elige el prompt."""
+    prompt = DESCRIPTION_MAIN_PROMPT if role == "main" else DESCRIPTION_SECONDARY_PROMPT
     image_url = pil_to_data_url(pil_image)
     messages = [
-        {"role": "system", "content": SCHEDULE_SYSTEM},
+        {"role": "system", "content": DESCRIPTION_SYSTEM},
         {
             "role": "user",
             "content": [
                 {"type": "image_url", "image_url": {"url": image_url}},
-                {"type": "text", "text": SCHEDULE_PROMPT},
+                {"type": "text", "text": prompt},
             ],
         },
     ]
     try:
         resp = await _get_client().chat.completions.create(
-            model=config.MODEL_NAME,
+            model=config.DESCRIBE_MODEL,
             messages=messages,
-            max_tokens=120,
-            temperature=0.1,
-            stop=["\n\n", "\nmodel", "<end_of_turn>", "<start_of_turn>"],
+            max_tokens=180,
+            temperature=0.0,
+            stop=["\n\n", "<end_of_turn>", "<start_of_turn>"],
             extra_body={"repetition_penalty": 1.2},
         )
     except AuthenticationError:
-        log.exception("extract_schedule failed (401)")
+        log.exception("extract_description failed (401) role=%s", role)
+        return ""
+    except Exception:
+        log.exception("extract_description failed role=%s", role)
+        return ""
+    raw = (resp.choices[0].message.content or "").strip()
+    log.info(
+        "vLLM description response: role=%s finish_reason=%s tokens=%s raw=%r",
+        role,
+        resp.choices[0].finish_reason,
+        resp.usage.completion_tokens if resp.usage else None,
+        raw[:400],
+    )
+    return raw
+
+
+# ────────────────────────────────────────────────────────────────────
+# PARSE HORARIO (solo texto, 1 llamada)
+# ────────────────────────────────────────────────────────────────────
+
+SCHEDULE_SYSTEM = (
+    "Extraes horarios de atención desde texto. Respondes SOLO con JSON válido "
+    "o con la palabra null. Nada más."
+)
+
+SCHEDULE_PROMPT = (
+    "Del siguiente texto, extrae el horario de atención y devuélvelo como JSON "
+    "con esta forma exacta (todas las claves presentes, en minúscula y sin "
+    "tildes):\n\n"
+    "{{\"lunes\":[\"HH:MM-HH:MM\"],\"martes\":[\"HH:MM-HH:MM\"],"
+    "\"miercoles\":[\"HH:MM-HH:MM\"],\"jueves\":[\"HH:MM-HH:MM\"],"
+    "\"viernes\":[\"HH:MM-HH:MM\"],\"sabado\":[\"HH:MM-HH:MM\"],"
+    "\"domingo\":[]}}\n\n"
+    "Reglas:\n"
+    "- Horas en formato 24h (HH:MM).\n"
+    "- Un día con varios turnos: [\"08:00-12:00\",\"14:00-18:00\"].\n"
+    "- Un día cerrado: lista vacía [].\n"
+    "- Si el texto NO menciona horarios de atención, responde EXACTAMENTE: null\n\n"
+    "Texto:\n\"\"\"\n{text}\n\"\"\"\n\n"
+    "Responde SOLO con el JSON o con null."
+)
+
+
+_JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _validate_schedule_dict(obj: Any) -> dict[str, list[str]] | None:
+    """Valida que sea {dia: [\"HH:MM-HH:MM\", ...]} con días canónicos."""
+    if not isinstance(obj, dict):
+        return None
+    out: dict[str, list[str]] = {d: [] for d in DAYS}
+    found_any = False
+    for k, v in obj.items():
+        if not isinstance(k, str):
+            continue
+        day = k.strip().lower()
+        if day not in DAYS:
+            continue
+        if not isinstance(v, list):
+            continue
+        ranges: list[str] = []
+        for r in v:
+            if not isinstance(r, str):
+                continue
+            s = r.strip()
+            if re.fullmatch(r"\d{2}:\d{2}-\d{2}:\d{2}", s):
+                ranges.append(s)
+                found_any = True
+        out[day] = ranges
+    return out if found_any or any(d in obj for d in DAYS) else None
+
+
+async def parse_schedule(description_text: str) -> dict[str, list[str]] | None:
+    """Una llamada al LLM (solo texto). Devuelve dict válido o None."""
+    text = (description_text or "").strip()
+    if not text:
+        return None
+
+    messages = [
+        {"role": "system", "content": SCHEDULE_SYSTEM},
+        {"role": "user", "content": SCHEDULE_PROMPT.format(text=text)},
+    ]
+    try:
+        resp = await _get_client().chat.completions.create(
+            model=config.DESCRIBE_MODEL,
+            messages=messages,
+            max_tokens=220,
+            temperature=0.0,
+            stop=["<end_of_turn>", "<start_of_turn>"],
+            extra_body={"repetition_penalty": 1.0},
+        )
+    except AuthenticationError:
+        log.exception("parse_schedule failed (401)")
         return None
     except Exception:
-        log.exception("extract_schedule failed")
+        log.exception("parse_schedule failed")
         return None
+
     raw = (resp.choices[0].message.content or "").strip()
     log.info(
         "vLLM schedule response: finish_reason=%s tokens=%s raw=%r",
         resp.choices[0].finish_reason,
         resp.usage.completion_tokens if resp.usage else None,
-        raw[:600],
-    )
-    return _parse_schedule(raw)
-
-
-# ────────────────────────────────────────────────────────────────────
-# SURROUNDINGS
-# ────────────────────────────────────────────────────────────────────
-
-SURROUNDINGS_SYSTEM = (
-    "Eres un asistente que describe el entorno físico de inmuebles. "
-    "Respondes con 1 o 2 frases en español, factual y conciso."
-)
-
-SURROUNDINGS_PROMPT = (
-    "Describe en 1 o 2 frases el entorno físico visible alrededor del inmueble "
-    "en la imagen: comercios contiguos, edificios vecinos, materiales o colores "
-    "distintivos, hitos visuales. Útil para localizar la dirección.\n\n"
-    "Si la imagen NO permite describir el entorno (porque muestra solo un "
-    "letrero, un interior, una foto cerrada, etc.), responde EXACTAMENTE: "
-    "sin referencias visibles\n\n"
-    "No repitas instrucciones. No uses listas. Solo la descripción."
-)
-
-
-async def describe_surroundings(pil_image: Image.Image) -> str:
-    """Una llamada al VLM enfocada en descripción del entorno. Devuelve string."""
-    image_url = pil_to_data_url(pil_image)
-    messages = [
-        {"role": "system", "content": SURROUNDINGS_SYSTEM},
-        {
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": image_url}},
-                {"type": "text", "text": SURROUNDINGS_PROMPT},
-            ],
-        },
-    ]
-    try:
-        resp = await _get_client().chat.completions.create(
-            model=config.MODEL_NAME,
-            messages=messages,
-            max_tokens=100,
-            temperature=0.3,
-            stop=["\n\n", "\nmodel", "<end_of_turn>", "<start_of_turn>"],
-            extra_body={"repetition_penalty": 1.3},
-        )
-    except AuthenticationError:
-        log.exception("describe_surroundings failed (401)")
-        return ""
-    except Exception:
-        log.exception("describe_surroundings failed")
-        return ""
-    raw = (resp.choices[0].message.content or "").strip()
-    log.info(
-        "vLLM surroundings response: finish_reason=%s tokens=%s raw=%r",
-        resp.choices[0].finish_reason,
-        resp.usage.completion_tokens if resp.usage else None,
         raw[:400],
     )
-    return raw
 
+    if raw.lower().startswith("null"):
+        return None
 
-# ────────────────────────────────────────────────────────────────────
-# SITE (descripción del inmueble principal)
-# ────────────────────────────────────────────────────────────────────
+    candidate = raw
+    if not candidate.startswith("{"):
+        m = _JSON_OBJ_RE.search(candidate)
+        if not m:
+            return None
+        candidate = m.group(0)
 
-SITE_SYSTEM = (
-    "Ayudas a domiciliarios a reconocer un inmueble desde la calle. "
-    "Respondes en español, en UNA frase corta, factual y visual. "
-    "Nada de arquitectura, estilo ni opiniones."
-)
-
-SITE_PROMPT = (
-    "Describe en UNA frase corta cómo se ve el inmueble desde la calle, "
-    "para que un domiciliario lo reconozca. Menciona lo que sea visible:\n"
-    "- color de la fachada,\n"
-    "- número de pisos,\n"
-    "- tipo de puerta o portón (madera, metálica, garaje, reja) y su color,\n"
-    "- letrero, número visible, balcones, antejardín u otra seña distintiva.\n\n"
-    "Ejemplos de estilo (NO copies, solo referencia):\n"
-    "- \"Edificio de 4 pisos color blanco con balcones grises y portón metálico negro.\"\n"
-    "- \"Casa de 2 pisos color beige con puerta de madera, reja blanca y antejardín "
-    "pequeño.\"\n"
-    "- \"Edificio gris de 3 pisos con letrero rojo \\\"Farmacia\\\" sobre la entrada.\"\n\n"
-    "Reglas estrictas:\n"
-    "- UNA sola frase.\n"
-    "- Solo lo que ayuda a ubicarlo a simple vista.\n"
-    "- Nada de \"arquitectura\", \"funcionalismo\", \"diseño\", \"estética\".\n"
-    "- Nada del entorno ni vecinos."
-)
-
-
-async def describe_site(pil_image: Image.Image) -> str:
-    """Una llamada al VLM enfocada en describir el inmueble principal."""
-    image_url = pil_to_data_url(pil_image)
-    messages = [
-        {"role": "system", "content": SITE_SYSTEM},
-        {
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": image_url}},
-                {"type": "text", "text": SITE_PROMPT},
-            ],
-        },
-    ]
     try:
-        resp = await _get_client().chat.completions.create(
-            model=config.MODEL_NAME,
-            messages=messages,
-            max_tokens=70,
-            temperature=0.2,
-            stop=["\n", "\nmodel", "<end_of_turn>", "<start_of_turn>"],
-            extra_body={"repetition_penalty": 1.3},
-        )
-    except AuthenticationError:
-        log.exception("describe_site failed (401)")
-        return ""
-    except Exception:
-        log.exception("describe_site failed")
-        return ""
-    raw = (resp.choices[0].message.content or "").strip()
-    log.info(
-        "vLLM site response: finish_reason=%s tokens=%s raw=%r",
-        resp.choices[0].finish_reason,
-        resp.usage.completion_tokens if resp.usage else None,
-        raw[:400],
-    )
-    return raw
+        obj = json.loads(candidate)
+    except json.JSONDecodeError:
+        log.warning("parse_schedule: JSON inválido raw=%r", raw[:200])
+        return None
+
+    return _validate_schedule_dict(obj)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -375,11 +252,9 @@ async def describe_site(pil_image: Image.Image) -> str:
 # ────────────────────────────────────────────────────────────────────
 
 def consolidate_schedule(
-    per_image_schedules: list[dict[str, list[str]] | None],
-    base_index: int = 1,
+    parsed: dict[str, list[str]] | None,
 ) -> dict[str, Any]:
-    """Primer horario detectado entre las imágenes; default si ninguno."""
-    for i, sched in enumerate(per_image_schedules):
-        if sched:
-            return {"hours": sched, "source": "detected", "image_index": base_index + i}
-    return {"hours": DEFAULT_SCHEDULE, "source": "default", "image_index": None}
+    """Aplica `DEFAULT_SCHEDULE` si `parsed` es None."""
+    if parsed is None:
+        return {"hours": DEFAULT_SCHEDULE, "source": "default"}
+    return {"hours": parsed, "source": "detected"}

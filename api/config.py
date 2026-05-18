@@ -1,4 +1,10 @@
-"""Configuración leída desde variables de entorno y archivo `.env`."""
+"""Configuración leída desde variables de entorno y archivo `.env`.
+
+Dos endpoints vLLM en el mismo pod GPU:
+  - CLASSIFY_*   → fine-tune de clasificación (gemma-3-4b-ft).
+  - DESCRIBE_*   → modelo base para descripción/OCR/horario (gemma-3-4b-it).
+La API key es la misma para ambos (se levantan con el mismo --api-key).
+"""
 
 from __future__ import annotations
 
@@ -11,9 +17,21 @@ from dotenv import load_dotenv  # pyright: ignore[reportMissingImports]
 # Las variables ya definidas en el entorno del proceso tienen prioridad.
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-RUNPOD_URL = os.environ.get("RUNPOD_URL", "http://localhost:8000").strip().rstrip("/")
+
+def _url(name: str, default: str) -> str:
+    return os.environ.get(name, default).strip().rstrip("/")
+
+
+# Clasificación (fine-tune, guided_choice). Pod GPU :8000.
+CLASSIFY_URL = _url("CLASSIFY_URL", "http://localhost:8000")
+CLASSIFY_MODEL = os.environ.get("CLASSIFY_MODEL", "gemma-3-4b-ft").strip()
+
+# Descripción / OCR / parse de horario. Pod GPU :8001 (modelo base).
+DESCRIBE_URL = _url("DESCRIBE_URL", "http://localhost:8001")
+DESCRIBE_MODEL = os.environ.get("DESCRIBE_MODEL", "gemma-3-4b-it").strip()
+
+# Misma API key para los dos procesos vLLM.
 RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "EMPTY").strip()
-MODEL_NAME = os.environ.get("MODEL_NAME", "gemma-3-4b-ft").strip()
 
 CLASS_NAMES = [
     c.strip() for c in os.environ.get(
@@ -22,13 +40,14 @@ CLASS_NAMES = [
     ).split(",") if c.strip()
 ]
 
-# Prompts idénticos a los del fine-tune (gemma3_vl_clasificador_inmuebles.py)
+# Prompts del clasificador. Una sola tarea: devolver UNA palabra exacta.
+# Salidas válidas: las clases de CLASS_NAMES o `unknown` si no hay certeza.
 SYSTEM_MSG = (
-    "You are an expert image classifier for real estate properties. "
-    "You classify images into exactly one category. "
-    "Only respond with the category name, nothing else."
+    "Clasificas fotos de inmuebles. Respondes con UNA sola palabra exacta, "
+    "sin explicación ni puntuación."
 )
 USER_PROMPT = (
-    "Classify this image into exactly one of the following categories: {classes}\n"
-    "Respond with ONLY the category name."
+    "¿Qué tipo de inmueble se ve en la foto? "
+    "Responde con UNA sola palabra, exactamente una de: {classes}. "
+    "Si la imagen no permite decidir con certeza, responde: unknown."
 )

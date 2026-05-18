@@ -19,33 +19,28 @@ _client: AsyncOpenAI | None = None
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        base = f"{config.RUNPOD_URL.rstrip('/')}/v1"
-        # [TESTING] Quitar o silenciar antes de producción: expone RUNPOD_API_KEY completa.
-        log.warning(
-            "[TESTING] vLLM client init base_url=%s model=%s RUNPOD_API_KEY=%r",
-            base,
-            config.MODEL_NAME,
-            config.RUNPOD_API_KEY,
+        base = f"{config.CLASSIFY_URL}/v1"
+        masked = (
+            f"{config.RUNPOD_API_KEY[:4]}…{config.RUNPOD_API_KEY[-4:]}"
+            if len(config.RUNPOD_API_KEY) >= 8 else "<short>"
+        )
+        log.info(
+            "classify vLLM client init base_url=%s model=%s key=%s",
+            base, config.CLASSIFY_MODEL, masked,
         )
         _client = AsyncOpenAI(base_url=base, api_key=config.RUNPOD_API_KEY)
     return _client
 
 
-def _log_auth_hint() -> None:
-    log.warning(
-        "[TESTING] vLLM 401 — clave que envía esta API (repr): %r | "
-        "curl: curl -sS %r -H %r -H 'Content-Type: application/json' "
-        "-d '{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":3}'",
-        config.RUNPOD_API_KEY,
-        f"{config.RUNPOD_URL.rstrip('/')}/v1/chat/completions",
-        f"Authorization: Bearer {config.RUNPOD_API_KEY}",
-        config.MODEL_NAME,
-    )
-
-
 async def classify_property(pil_image: Image.Image) -> dict[str, Any]:
-    """Devuelve {label, raw, error}. label ∈ CLASS_NAMES ∪ {'unknown'}."""
+    """Devuelve {label, raw, error}. label ∈ CLASS_NAMES ∪ {'unknown'}.
+
+    Usa `guided_choice` de vLLM para restringir la salida del decoder a una
+    de las etiquetas permitidas. Esto garantiza el contrato del endpoint
+    incluso si el modelo intenta divagar.
+    """
     image_url = pil_to_data_url(pil_image)
+    allowed = [*config.CLASS_NAMES, "unknown"]
     messages = [
         {"role": "system", "content": config.SYSTEM_MSG},
         {
@@ -58,14 +53,14 @@ async def classify_property(pil_image: Image.Image) -> dict[str, Any]:
     ]
     try:
         resp = await _get_client().chat.completions.create(
-            model=config.MODEL_NAME,
+            model=config.CLASSIFY_MODEL,
             messages=messages,
-            max_tokens=32,
+            max_tokens=8,
             temperature=0.0,
+            extra_body={"guided_choice": allowed},
         )
     except AuthenticationError as e:
-        _log_auth_hint()
-        log.exception("Classification failed (401)")
+        log.exception("Classification failed (401) on %s", config.CLASSIFY_URL)
         return {"label": "unknown", "raw": None, "error": str(e)}
     except Exception as e:
         log.exception("Classification failed")
@@ -78,10 +73,12 @@ async def classify_property(pil_image: Image.Image) -> dict[str, Any]:
         resp.choices[0].finish_reason,
         resp.usage.model_dump() if resp.usage else None,
     )
-    lower = raw.lower()
+    # Normaliza: minúsculas, '_' y '-' como espacio, colapsa espacios.
+    norm = " ".join(raw.lower().replace("_", " ").replace("-", " ").split())
     label = "unknown"
     for name in config.CLASS_NAMES:
-        if name.lower() in lower:
+        canon = name.lower().replace("_", " ")
+        if canon in norm:
             label = name
             break
     return {"label": label, "raw": raw, "error": None}
