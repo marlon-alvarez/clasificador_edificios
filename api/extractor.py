@@ -26,9 +26,10 @@ from images import pil_to_data_url
 
 log = logging.getLogger(__name__)
 
-DAYS = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
+DAYS = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado"]
 
-# Horario por defecto: L-V 8:00-17:00, Sábado 8:00-12:00, Domingo cerrado.
+# Horario por defecto: L-V 8:00-17:00, Sábado 8:00-12:00.
+# Domingo se omite intencionalmente: no se trabaja ni se reparte ese día.
 DEFAULT_SCHEDULE: dict[str, list[str]] = {
     "lunes":     ["08:00-17:00"],
     "martes":    ["08:00-17:00"],
@@ -36,7 +37,6 @@ DEFAULT_SCHEDULE: dict[str, list[str]] = {
     "jueves":    ["08:00-17:00"],
     "viernes":   ["08:00-17:00"],
     "sabado":    ["08:00-12:00"],
-    "domingo":   [],
 }
 
 
@@ -148,17 +148,17 @@ SCHEDULE_SYSTEM = (
 )
 
 SCHEDULE_PROMPT = (
-    "Del siguiente texto, extrae el horario de atención y devuélvelo como JSON "
-    "con esta forma exacta (todas las claves presentes, en minúscula y sin "
-    "tildes):\n\n"
+    "Del siguiente texto, extrae el horario de atención de LUNES a SÁBADO y "
+    "devuélvelo como JSON con esta forma exacta (todas las claves presentes, "
+    "en minúscula y sin tildes; NO incluyas domingo):\n\n"
     "{{\"lunes\":[\"HH:MM-HH:MM\"],\"martes\":[\"HH:MM-HH:MM\"],"
     "\"miercoles\":[\"HH:MM-HH:MM\"],\"jueves\":[\"HH:MM-HH:MM\"],"
-    "\"viernes\":[\"HH:MM-HH:MM\"],\"sabado\":[\"HH:MM-HH:MM\"],"
-    "\"domingo\":[]}}\n\n"
+    "\"viernes\":[\"HH:MM-HH:MM\"],\"sabado\":[\"HH:MM-HH:MM\"]}}\n\n"
     "Reglas:\n"
     "- Horas en formato 24h (HH:MM).\n"
     "- Un día con varios turnos: [\"08:00-12:00\",\"14:00-18:00\"].\n"
     "- Un día cerrado: lista vacía [].\n"
+    "- NUNCA incluyas el día domingo, aunque el texto lo mencione.\n"
     "- Si el texto NO menciona horarios de atención, responde EXACTAMENTE: null\n\n"
     "Texto:\n\"\"\"\n{text}\n\"\"\"\n\n"
     "Responde SOLO con el JSON o con null."
