@@ -13,9 +13,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv  # pyright: ignore[reportMissingImports]
 
-# Carga `api/.env` al importar este módulo (antes de leer os.environ).
-# Las variables ya definidas en el entorno del proceso tienen prioridad.
-load_dotenv(Path(__file__).resolve().parent / ".env")
+# Carga `api/.env` al importar este módulo.
+# `override=True` porque RunPod inyecta su propia env `RUNPOD_API_KEY`
+# (la API key de su plataforma) que tapaba la nuestra. El `.env` manda.
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
 
 def _url(name: str, default: str) -> str:
