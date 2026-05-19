@@ -23,6 +23,7 @@ import os
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
 import config
 from anonymizer import anonymize_faces
@@ -45,6 +46,16 @@ app = FastAPI(
         "entorno) y consolida el horario de atención en JSON."
     ),
     version="2.0.0",
+)
+
+# CORS abierto a todos los orígenes. Endurecer en producción si la API se
+# expone fuera de un cliente controlado.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,  # con "*" no se permiten credentials (spec CORS)
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
