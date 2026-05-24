@@ -1,104 +1,99 @@
-# API — Procesamiento de imágenes de inmuebles
+# API — Clasificación de inmuebles y horarios de operación
 
-Servicio FastAPI **independiente** con un único endpoint `POST /processing`.
+Servicio FastAPI que recibe fotos tomadas por domiciliarios y devuelve:
 
-Pipeline aplicado a **todas** las imágenes:
+1. **Tipo de inmueble** (casa, apartamento, local_comercial) clasificado con
+   un modelo Gemma-3-VL fine-tuned servido por vLLM.
+2. **Horario de operación** estimado a partir de pistas visuales (letreros,
+   horarios escritos, entorno) extraídas por un VLM y consolidadas por un LLM.
+3. **Caras humanas anonimizadas** (blur local con OpenCV) antes de salir hacia
+   cualquier servicio externo.
 
-1. Anonimiza caras humanas (mediapipe + blur Gaussiano).
-2. OCR (easyocr) + extracción de direcciones, teléfonos, emails, URLs,
-   precios, áreas y menciones de color.
-3. Descripción de inmuebles aledaños y referencias visuales (Gemma-3-VL).
-4. Color dominante (KMeans).
+Es la pieza de inferencia del proyecto **Sistema de Clasificación Automática
+de Tipo de Inmueble y Asignación de Horarios de Operación mediante Computer
+Vision** (ver contexto al final).
 
-A la **primera** imagen (la principal del inmueble) se le añade además la
-**clasificación** del tipo de inmueble usando el modelo Gemma-3-VL
-fine-tuned servido por vLLM en RunPod.
+## Pipeline
 
-Devuelve un JSON con la principal al inicio y un `summary` consolidado.
+Para cada request a `POST /processing`:
+
+1. Carga las imágenes (multipart, campo `images`; la primera es la principal).
+2. Anonimiza caras humanas en **todas** las imágenes (OpenCV Haar, local CPU).
+3. En paralelo contra el pod GPU:
+   - Clasifica la imagen principal → `casa | apartamento | local_comercial | unknown`.
+   - Describe cada imagen (colores, letreros, horarios, entorno) con el VLM base.
+4. Concatena descripciones y pide al LLM un horario JSON. Si no hay evidencia
+   suficiente, cae a `DEFAULT_SCHEDULE`.
+5. Devuelve la respuesta consolidada.
 
 ## Estructura
 
 ```
 api/
   main.py          # FastAPI app + endpoint /processing
-  config.py        # .env + variables de entorno y prompts del fine-tune
-  .env.example     # plantilla (copiar a .env)
-  .gitignore        # ignora .env y .venv
-  anonymizer.py    # mediapipe + cv2 blur de caras
-  classifier.py    # cliente OpenAI → vLLM (clasificación + aledaños)
-  ocr.py           # easyocr + regex de campos
-  colors.py        # KMeans dominant colors + paleta nombrada
-  images.py        # PIL <-> base64
+  config.py        # carga .env, URLs y prompts del fine-tune
+  anonymizer.py    # OpenCV Haar blur de caras
+  classifier.py    # cliente OpenAI → vLLM clasificador (guided_choice)
+  extractor.py     # descripción VLM + parsing/consolidación de horario
+  images.py        # PIL <-> base64, downscale para el VLM
   requirements.txt
   .env.example
-  README.md
 ```
 
 ## Pre-requisitos
 
-- Python 3.10+
-- Pod de vLLM con el modelo Gemma-3-VL fine-tuned ya corriendo en RunPod
-  (ver `../PLAN_DEPLOY.md`). Necesitas su URL pública y la API key.
+- Python 3.10 u 11 (mediapipe/OpenCV no publican wheels estables para 3.13+).
+- Pod RunPod con **dos** procesos vLLM en el mismo GPU:
+  - `:8000` → `gemma-3-4b-ft` (fine-tune clasificador).
+  - `:8001` → `gemma-3-4b-it` (modelo base para descripción/OCR/horario).
+- Ver `PLAN_DEPLOY_RUNPOD.md` para el start command y el setup del pod.
 
 ## Configuración (`.env`)
-
-Copia la plantilla y edítala **una vez** en `api/.env`:
 
 ```bash
 cd api
 cp .env.example .env
-# edita .env con tu RUNPOD_URL y RUNPOD_API_KEY
+# edita .env con las URLs de tu pod y la API key
 ```
-
-`config.py` carga automáticamente `api/.env` al arrancar. Si alguna variable
-ya existe en el entorno del proceso, **gana** el valor del entorno (útil en
-CI o Docker sin tocar `.env`).
 
 | Var | Default | Descripción |
 |---|---|---|
-| `RUNPOD_URL` | `http://localhost:8000` | URL pública del pod vLLM (sin `/v1`) |
-| `RUNPOD_API_KEY` | `EMPTY` | API key del start command de vLLM |
-| `MODEL_NAME` | `gemma-3-4b-ft` | `served-model-name` configurado en vLLM |
+| `CLASSIFY_URL` | `http://localhost:8000` | URL pública del pod vLLM clasificador (sin `/v1`) |
+| `CLASSIFY_MODEL` | `gemma-3-4b-ft` | `served-model-name` del fine-tune |
+| `DESCRIBE_URL` | `http://localhost:8001` | URL pública del pod vLLM base |
+| `DESCRIBE_MODEL` | `gemma-3-4b-it` | `served-model-name` del modelo base |
+| `RUNPOD_API_KEY` | `EMPTY` | API key compartida por ambos procesos vLLM |
 | `CLASS_NAMES` | `apartamento,casa,local_comercial` | Clases del fine-tune (CSV) |
-| `OCR_LANGS` | `es,en` | Idiomas para easyocr (CSV) |
-| `RETURN_IMAGES` | `1` | `0` para no devolver base64 (respuestas más livianas) |
 | `PORT` | `8080` | Puerto local de la API |
 
-## Correr (siempre desde dentro de `api/`)
+> Las URLs van **sin** sufijo `/v1` y **sin** trailing slash; `config.py` añade
+> `/v1` internamente. `RUNPOD_API_KEY` es solo el secreto, no lleva `Bearer`.
+
+## Correr (desde dentro de `api/`)
 
 ```bash
 cd api
-
-# 1. Entorno virtual (recomendado)
 python -m venv .venv
 source .venv/bin/activate
-
-# 2. Dependencias
 pip install -r requirements.txt
-
-# 3. Config: cp .env.example .env y edita .env (RUNPOD_URL, RUNPOD_API_KEY, …)
-
-# 4. Levantar
 python main.py
-# o equivalentemente:
-# uvicorn main:app --host 0.0.0.0 --port 8080
+# equivalente: uvicorn main:app --host 0.0.0.0 --port 8080
 ```
 
-> **Importante:** `RUNPOD_URL` va **sin** sufijo `/v1` y **sin** trailing slash;
-> `config.py` añade `/v1` internamente.
-> `RUNPOD_API_KEY` es solo el secreto, **no** lleva `Bearer ` adelante.
+## Endpoints
 
-Primer request: la primera vez que llegue tráfico, easyocr y mediapipe se
-cargan en memoria (~30-60 s). Llamadas siguientes ya son rápidas.
+### `GET /health`
 
-## Probar
+Estado y configuración cargada.
 
-### Health
 ```bash
 curl http://localhost:8080/health | jq
 ```
 
-### Procesar imágenes (la primera = principal)
+### `POST /processing`
+
+Recibe una lista de imágenes. La primera es la principal.
+
 ```bash
 curl -F "images=@principal.jpg" \
      -F "images=@letrero.jpg" \
@@ -106,59 +101,112 @@ curl -F "images=@principal.jpg" \
      http://localhost:8080/processing | jq
 ```
 
-### Respuesta sin base64 (más liviana)
-
-En `.env` pon `RETURN_IMAGES=0` y reinicia la API.
-
-## Estructura de la respuesta
+Respuesta (forma resumida):
 
 ```jsonc
 {
-  "main_image": {
-    "index": 0,
-    "filename": "principal.jpg",
-    "role": "principal",
-    "classification": { "label": "casa", "raw": "casa", "error": null },
-    "dominant_colors": [{ "name": "beige", "hex": "...", "ratio": 0.42 }, ...],
-    "faces_blurred": 0,
-    "ocr_text": "...",
-    "ocr_blocks": [...],
-    "extracted_fields": { "addresses": [...], "phones": [...], ... },
-    "surroundings": { "description": "...", "error": null },
-    "anonymized_image_b64": "..."
-  },
   "property_type": "casa",
-  "additional_images": [ /* misma forma que main_image, sin classification */ ],
+  "classification": { "label": "casa", "raw": "casa", "error": null },
+  "images": [
+    {
+      "index": 0,
+      "filename": "principal.jpg",
+      "role": "principal",
+      "faces_blurred": 1,
+      "description": "..."
+    }
+    // ...
+  ],
+  "schedule": {
+    "source": "vlm" | "default",
+    "weekly": { "mon": "09:00-19:00", ... }
+  },
   "summary": {
-    "property_type": "casa",
-    "main_dominant_colors": ["beige", "marron", ...],
-    "all_dominant_colors": [...],
-    "candidate_addresses": [...],
-    "candidate_phones": [...],
-    "candidate_emails": [...],
-    "candidate_urls": [...],
-    "candidate_prices": [...],
-    "candidate_areas": [...],
-    "color_mentions_in_ocr": [...],
-    "ocr_concatenated": "...",
-    "surroundings_concatenated": "...",
     "total_images": 3,
-    "total_faces_blurred": 1
+    "total_faces_blurred": 1,
+    "schedule_source": "vlm",
+    "description_concatenated": "..."
   }
 }
 ```
 
 ## Troubleshooting
 
-- **`401 Unauthorized` al clasificar** → revisa que `RUNPOD_API_KEY` coincida
-  con el `--api-key` que pusiste en el start command de vLLM.
-- **`Connection refused`** → el pod vLLM está apagado o `RUNPOD_URL` está mal.
-  Verifica (sustituye URL y clave):  
+- **`401 Unauthorized`** → `RUNPOD_API_KEY` no coincide con el `--api-key` del
+  start command de vLLM.
+- **`Connection refused`** → el pod está apagado o `CLASSIFY_URL` / `DESCRIBE_URL`
+  están mal. Verificá:
   `curl -sS "https://TU-POD-8000.proxy.runpod.net/v1/models" -H "Authorization: Bearer TU_CLAVE"`.
-- **Mediapipe falla en Mac M1/M2** → usa Python 3.10 u 11 (mediapipe aún no
-  publica wheels para 3.13+).
-- **Easyocr descarga modelos en cada arranque** → cachea en `~/.EasyOCR/`,
-  el primer arranque baja ~60 MB.
+- **Primer request lento** → modelos de OpenCV y carga inicial de clientes
+  (~10-30 s). Llamadas siguientes ya son rápidas.
 - **Latencia alta** → cada imagen secundaria hace una llamada extra al VLM
-  para describir aledaños. Si necesitas velocidad, podemos exponer un flag
-  para desactivarlo.
+  para describir el entorno; reducir el número de imágenes baja el tiempo
+  proporcionalmente.
+
+---
+
+## Contexto del proyecto
+
+**Sistema de Clasificación Automática de Tipo de Inmueble y Asignación de
+Horarios de Operación mediante Computer Vision para Optimización de Entregas
+en Logística de Última Milla.**
+
+**Organización**
+
+- **Nombre:** Inter Rapidísimo S.A.
+- **Sector:** Logística y mensajería.
+- **Descripción:** Empresa colombiana líder en mensajería especializada en
+  entregas de última milla (~10,000 entregas diarias), en proceso de
+  transformación digital mediante **Inter App**, aplicación móvil en Flutter
+  para domiciliarios no expertos.
+
+**Equipo**
+
+- María Paula Acosta Luque — mp.acosta1@uniandes.edu.co
+- Andrés Torres — ga.torresc1@uniandes.edu.co
+- Marlon Álvarez Álvarez — m.alvareza2@uniandes.edu.co
+- David Geronimo Quiroga Torres — d.quirogat@uniandes.edu.co
+- **Experto:** Andrés Ramírez — Gerente de mercadeo, Nodos — gerente.mercadeo1@interrapidisimo.com
+
+**Problema**
+
+Inter Rapidísimo cuenta con una "Torre de Direcciones" con coordenadas GPS,
+pero **sin** información de tipo de inmueble ni horarios de operación. Esto
+provoca:
+
+1. Domiciliarios sin contexto del destino (casa, oficina, restaurante, bodega)
+   hasta llegar.
+2. Intentos de entrega en horarios inadecuados, generando **15-20% de fallos
+   evitables** por horario o tipo incorrecto.
+
+**Justificación**
+
+El sistema completo:
+
+1. Clasifica el tipo de inmueble con CNN/VLM a partir de fotos del domiciliario.
+2. Asigna horarios según tipo, combinando reglas y Google Places API.
+3. Alimenta automáticamente la Torre de Direcciones, enriqueciéndola desde el
+   lanzamiento de Inter App.
+
+**Objetivo general**
+
+Desarrollar un sistema de clasificación automática de inmuebles mediante
+redes neuronales convolucionales integrado con asignación de horarios de
+operación, para enriquecer la Torre de Direcciones y optimizar entregas en
+logística de última milla.
+
+**Objetivos específicos**
+
+1. Construir un dataset etiquetado en 12 categorías (casa, apartamento,
+   oficina, restaurante, tienda, farmacia, banco, centro comercial, bodega,
+   hospital, colegio, coworking) combinando fuentes públicas, Google Street
+   View y captura local en Bogotá.
+2. Desarrollar modelos de clasificación con transfer learning sobre
+   MobileNetV2, ResNet50 y EfficientNetB0, comparando precisión y eficiencia.
+3. Implementar la asignación de horarios por categoría combinando reglas
+   predefinidas y consulta dinámica a Google Places API.
+4. Evaluar el sistema con accuracy, precision, recall, F1-score y análisis de
+   concordancia entre horarios asignados y reales.
+
+> Esta API expone la inferencia del pipeline (clasificación + horario) que se
+> integra con Inter App y con la Torre de Direcciones.

@@ -1,0 +1,7 @@
+transformers>=4.50
+peft>=0.19
+accelerate>=0.34
+huggingface_hub>=0.25
+safetensors
+sentencepiece
+torch>=2.4

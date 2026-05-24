@@ -33,7 +33,7 @@ from extractor import (
     extract_description,
     parse_schedule,
 )
-from images import downscale_for_vlm, load_pil
+from images import downscale_for_vlm, load_pil, pil_to_data_url
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("api")
@@ -117,15 +117,17 @@ async def processing(
     parsed_schedule = await parse_schedule(concatenated)
     schedule = consolidate_schedule(parsed_schedule)
 
-    # 5. Armar respuesta por imagen.
+    # 5. Armar respuesta por imagen (incluye la imagen anonimizada en base64
+    #    como data URL JPEG, lista para `<img src=...>` en el cliente).
     per_image: list[dict[str, Any]] = []
-    for i, (name, _, n_faces) in enumerate(anonymized):
+    for i, (name, anon_img, n_faces) in enumerate(anonymized):
         per_image.append({
             "index": i,
             "filename": name,
             "role": "principal" if i == 0 else "secundaria",
             "faces_blurred": n_faces,
             "description": descriptions[i],
+            "anonymized_image": pil_to_data_url(anon_img),
         })
 
     return {
