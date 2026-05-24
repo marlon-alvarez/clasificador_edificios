@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -79,6 +81,12 @@ async def processing(
     if not images:
         raise HTTPException(400, "Se requiere al menos una imagen.")
 
+    log.info(
+        "POST /processing recibió %d archivo(s): %s",
+        len(images),
+        [f.filename for f in images],
+    )
+
     # 1. Cargar
     loaded: list[tuple[str, Any]] = []
     for f in images:
@@ -94,9 +102,17 @@ async def processing(
     #    Orden obligatorio por privacidad: las caras se difuminan antes de cualquier
     #    salida hacia el pod GPU, y el downscale ocurre sobre la imagen ya anonimizada.
     anonymized: list[tuple[str, Any, int]] = []
-    for name, img in loaded:
+    # DEBUG: dump anonymized images a disco para verificación visual.
+    debug_dir = Path(__file__).parent / "tmp_anon"
+    debug_dir.mkdir(exist_ok=True)
+    batch_ts = int(time.time())
+    for i, (name, img) in enumerate(loaded):
         anon, n_faces = anonymize_faces(img)
-        anonymized.append((name, downscale_for_vlm(anon), n_faces))
+        scaled = downscale_for_vlm(anon)
+        out_path = debug_dir / f"{batch_ts}_{i:02d}_{Path(name).stem}.jpg"
+        scaled.save(out_path, format="JPEG", quality=90)
+        log.info("anon dump -> %s (faces=%d)", out_path, n_faces)
+        anonymized.append((name, scaled, n_faces))
 
     # 3. Visión en paralelo:
     #    - Clasificación de la principal (1 llamada).

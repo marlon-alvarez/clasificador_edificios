@@ -15,7 +15,7 @@ flowchart LR
     subgraph Local["🖥️ API local · FastAPI :8080"]
         direction TB
         EP["POST /processing"]
-        ANON["anonymizer.py<br/>OpenCV Haar (CPU)"]
+        ANON["anonymizer.py<br/>OpenCV YuNet · DNN (CPU)"]
         IMG["images.py<br/>downscale + base64"]
         CLS["classifier.py<br/>cliente OpenAI"]
         EXT["extractor.py<br/>VLM desc. + LLM horario"]
@@ -73,7 +73,7 @@ sequenceDiagram
     autonumber
     participant U as 📱 Inter App
     participant A as 🖥️ FastAPI<br/>(api/main.py)
-    participant H as 🧠 OpenCV Haar<br/>(CPU local)
+    participant H as 🧠 OpenCV YuNet<br/>(DNN · CPU local)
     participant C as 🎯 vLLM :8000<br/>gemma-3-4b-ft
     participant D as 👁️ vLLM :8001<br/>gemma-3-4b-it
 

@@ -54,6 +54,8 @@ out/
 
 # Model weights (downloaded at runtime)
 backend/model/
+api/models/
+api/tmp_anon/
 
 # Misc
 *.log

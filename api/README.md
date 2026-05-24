@@ -6,8 +6,8 @@ Servicio FastAPI que recibe fotos tomadas por domiciliarios y devuelve:
    un modelo Gemma-3-VL fine-tuned servido por vLLM.
 2. **Horario de operación** estimado a partir de pistas visuales (letreros,
    horarios escritos, entorno) extraídas por un VLM y consolidadas por un LLM.
-3. **Caras humanas anonimizadas** (blur local con OpenCV) antes de salir hacia
-   cualquier servicio externo.
+3. **Caras humanas anonimizadas** (blur local con OpenCV **YuNet**) antes de
+   salir hacia cualquier servicio externo.
 
 Es la pieza de inferencia del proyecto **Sistema de Clasificación Automática
 de Tipo de Inmueble y Asignación de Horarios de Operación mediante Computer
@@ -18,7 +18,7 @@ Vision** (ver contexto al final).
 Para cada request a `POST /processing`:
 
 1. Carga las imágenes (multipart, campo `images`; la primera es la principal).
-2. Anonimiza caras humanas en **todas** las imágenes (OpenCV Haar, local CPU).
+2. Anonimiza caras humanas en **todas** las imágenes (OpenCV **YuNet**, local CPU).
 3. En paralelo contra el pod GPU:
    - Clasifica la imagen principal → `casa | apartamento | local_comercial | unknown`.
    - Describe cada imagen (colores, letreros, horarios, entorno) con el VLM base.
@@ -32,7 +32,8 @@ Para cada request a `POST /processing`:
 api/
   main.py          # FastAPI app + endpoint /processing
   config.py        # carga .env, URLs y prompts del fine-tune
-  anonymizer.py    # OpenCV Haar blur de caras
+  anonymizer.py    # OpenCV YuNet (DNN) blur de caras
+  models/          # creado en runtime: cachea face_detection_yunet_*.onnx (~340 KB)
   classifier.py    # cliente OpenAI → vLLM clasificador (guided_choice)
   extractor.py     # descripción VLM + parsing/consolidación de horario
   images.py        # PIL <-> base64, downscale para el VLM
@@ -137,8 +138,17 @@ Respuesta (forma resumida):
 - **`Connection refused`** → el pod está apagado o `CLASSIFY_URL` / `DESCRIBE_URL`
   están mal. Verificá:
   `curl -sS "https://TU-POD-8000.proxy.runpod.net/v1/models" -H "Authorization: Bearer TU_CLAVE"`.
-- **Primer request lento** → modelos de OpenCV y carga inicial de clientes
-  (~10-30 s). Llamadas siguientes ya son rápidas.
+- **Primer request lento** → en el primer arranque se descarga el modelo YuNet
+  (~340 KB) a `api/models/` y se inicializan los clientes (~10-30 s).
+  Llamadas siguientes ya son rápidas. Si el server no tiene salida a internet,
+  pre-bajar `face_detection_yunet_2023mar.onnx` desde
+  [opencv_zoo](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
+  y copiarlo a `api/models/` durante el build/deploy.
+- **Caras chicas o de perfil no se difuminan** → bajar `_SCORE_THRESHOLD` en
+  `anonymizer.py` (default `0.55`) hasta `0.4`. Si en cambio aparecen falsos
+  positivos (ventanas, lámparas) subirlo a `0.7-0.8`. En panorámicas 360° con
+  caras muy deformadas o distantes el recall sigue siendo limitado; ahí
+  conviene complementar con un detector de personas y blurear la cabeza.
 - **Latencia alta** → cada imagen secundaria hace una llamada extra al VLM
   para describir el entorno; reducir el número de imágenes baja el tiempo
   proporcionalmente.
