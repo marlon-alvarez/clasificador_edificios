@@ -2,7 +2,7 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 python-dotenv>=1.0.0
 python-multipart>=0.0.9
-openai>=1.40,<1.52
+openai>=1.55
 pillow>=10.0
 numpy
 opencv-python-headless>=4.9
